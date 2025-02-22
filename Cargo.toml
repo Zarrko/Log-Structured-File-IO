@@ -7,6 +7,8 @@ edition = "2021"
 
 [dependencies]
 clap = "2.32.0"
+serde = { version = "1.0.218", features = ["derive"] }
+serde_json = "1.0.139"
 structopt = "0.3"
 
 [dev-dependencies]

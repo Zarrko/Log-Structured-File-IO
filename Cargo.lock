@@ -168,6 +168,8 @@ dependencies = [
  "assert_cmd",
  "clap",
  "predicates",
+ "serde",
+ "serde_json",
  "structopt",
  "tempfile",
  "walkdir",
