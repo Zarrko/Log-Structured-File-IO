@@ -7,7 +7,7 @@ pub enum KvsError {
     /// IO Error
     IoError(io::Error),
 
-    /// Serialization/Deserialization Erro
+    /// Serialization/Deserialization Error
     Serde(serde_json::Error),
 
     /// Non existent key

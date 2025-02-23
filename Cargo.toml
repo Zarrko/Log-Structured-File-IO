@@ -4,15 +4,24 @@ authors = ["Zarrko zarrko@"]
 version = "0.1.0"
 description = "A persistent key-value store"
 edition = "2021"
+build = "build.rs"
 
 [dependencies]
 clap = "2.32.0"
 serde = { version = "1.0.218", features = ["derive"] }
 serde_json = "1.0.139"
-structopt = "0.3"
+prost = "0.13"
+prost-types = "0.13"
+protobuf = "3.7.1"
+crc32fast = "1.4.2"
 
 [dev-dependencies]
 assert_cmd = "0.11.0"
 predicates = "1.0.0"
 tempfile = "3.0.7"
 walkdir = "2.2.7"
+
+[build-dependencies]
+prost = "0.13"
+prost-build = "0.13"
+

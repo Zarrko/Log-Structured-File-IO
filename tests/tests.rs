@@ -299,3 +299,30 @@ fn compaction() -> Result<()> {
 
     panic!("No compaction detected");
 }
+
+#[test]
+fn test_log_behavior() -> Result<()> {
+    use std::fs;
+    use tempfile::TempDir;
+
+    // Create a temporary directory for our test
+    let temp_dir = TempDir::new().expect("unable to create temporary directory");
+
+    // Create a single KvStore instance
+    let mut store = KvStore::open(temp_dir.path())?;
+
+    // Write 5 keys
+    for i in 0..5 {
+        let value = "x".repeat(10);
+        store.set(format!("key{}", i), value)?;
+
+        // Print current state
+        println!("After setting key{}", i);
+        for entry in fs::read_dir(temp_dir.path())? {
+            let entry = entry?;
+            println!("  {:?}", entry.path());
+        }
+    }
+
+    Ok(())
+}

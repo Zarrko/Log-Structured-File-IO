@@ -1,0 +1,38 @@
+syntax = "proto3";
+
+package kvs_command;
+
+
+/*    Binary format (more compact than JSON)
+    Schema-defined (you define message structure in .proto files)
+    Strong typing
+    Forward/backward compatibility support
+    Much faster to serialize/deserialize than JSON
+    Cross-language support*/
+
+message KvsSet {
+  string key = 1;
+  string value = 2;
+  uint32 key_size = 3;
+  uint32 value_size = 4;
+}
+
+message KvsRemove {
+  string key = 1;
+  uint32 key_size = 2;
+}
+
+// Main command wrapper with metadata
+message KvsCommand {
+  // Metadata
+  uint64 timestamp = 1;
+  uint64 sequence_number = 2;
+  uint32 checksum = 3;
+  uint32 version = 4;
+
+  // The actual command
+  oneof command {
+    KvsSet set = 5;
+    KvsRemove remove = 6;
+  }
+}
