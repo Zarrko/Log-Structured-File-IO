@@ -6,16 +6,13 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Deserializer;
 
+use crate::kvs_command::{kvs_command, KvsCommand, KvsRemove, KvsSet};
 use crate::{KvsError, Result};
-use crate::kvs_command::{KvsSet, KvsRemove, KvsCommand, kvs_command};
-use std::ffi::OsStr;
-use std::io::ErrorKind::UnexpectedEof;
-use std::time::{SystemTime, UNIX_EPOCH};
 use crc32fast::Hasher;
 use prost::Message;
-use crate::kv::Command::Set;
+use std::ffi::OsStr;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const COMPACTION_THRESHOLD: u64 = 1024 * 1024;
 const CURRENT_SCHEMA_VERSION: u64 = 1;
@@ -110,16 +107,27 @@ impl KvStore {
     /// # Errors
     ///
     /// It propagates I/O or serialization errors during writing the log.
-    pub fn set(&mut self, key: String, value: String) -> Result<()> {
-        println!("Debug: Set key='{}', uncompacted={}, current_gen={}", &key, self.uncompacted, self.current_gen);
-        let cmd = Command::set(key, value);
+    pub fn set_v2(&mut self, key: String, value: String) -> Result<()> {
+        let sequence = self.current_sequence.unwrap_or(0) + 1;
+        self.current_sequence = Some(sequence);
+
+        let cmd = KvsCommand::set(key, value, sequence);
         let pos = self.writer.pos;
-        serde_json::to_writer(&mut self.writer, &cmd)?;
+
+        let cmd_bytes = cmd.encode_to_vec();
+
+        // Write length prefix (4 bytes, little endian)
+        self.writer.write_all(&(cmd_bytes.len() as u32).to_le_bytes())?;
+
+        // Write actual message
+        self.writer.write_all(&cmd_bytes)?;
         self.writer.flush()?;
-        if let Command::Set { key, .. } = cmd {
+
+        // Update index and track uncompacted bytes
+        if let Some(kvs_command::Command::Set(set)) = cmd.command {
             if let Some(old_cmd) = self
                 .index
-                .insert(key, (self.current_gen, pos..self.writer.pos).into())
+                .insert(set.key, CommandPos { gen: self.current_gen, pos, len: self.writer.pos - pos })
             {
                 self.uncompacted += old_cmd.len;
             }
@@ -129,7 +137,6 @@ impl KvStore {
             self.compact()?;
         }
 
-        println!("Debug: Index state: {:?}", self.index.iter().collect::<Vec<_>>());
         Ok(())
     }
 
@@ -180,7 +187,7 @@ impl KvStore {
         }
     }
 
-    /// Clears stale entries in the log.
+    /// Clears stale entries in the log. And rewrites latest values in a new log file
     pub fn compact(&mut self) -> Result<()> {
         println!("Debug: Starting compaction. Current size: {}", self.uncompacted);
 
@@ -399,13 +406,13 @@ impl Checksumable for kvs_command::Command{
 }
 
 impl KvsCommand {
-    fn set(key: String, value: String) -> KvsCommand {
+    fn set(key: String, value: String, sequence: u64) -> KvsCommand {
 
         let command = kvs_command::Command::Set(KvsSet { key, value, key_size: 0, value_size: 0 });
         let checksum = command.calculate_checksum();
         KvsCommand {
             timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
-            sequence_number: 0,
+            sequence_number: sequence,
             checksum,
             version: CURRENT_SCHEMA_VERSION as u32,
             command: command.into(),
