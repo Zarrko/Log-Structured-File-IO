@@ -147,16 +147,27 @@ impl KvStore {
     /// # Errors
     ///
     /// It returns `KvsError::UnexpectedCommandType` if the given command type unexpected.
-    pub fn get(&mut self, key: String) -> Result<Option<String>> {
+    pub fn get_v2(&mut self, key: String) -> Result<Option<String>>{
         if let Some(cmd_pos) = self.index.get(&key) {
-            let reader = self
-                .readers
-                .get_mut(&cmd_pos.gen)
-                .expect("Cannot find log reader");
+            let reader = self.readers.get_mut(&cmd_pos.gen).expect("Cannot find log reader");
             reader.seek(SeekFrom::Start(cmd_pos.pos))?;
-            let cmd_reader = reader.take(cmd_pos.len);
-            if let Command::Set { value, .. } = serde_json::from_reader(cmd_reader)? {
-                Ok(Some(value))
+
+            // Prefix
+            let mut len_bytes = [0u8; 4];
+            reader.read_exact(&mut len_bytes)?;
+            let msg_len = u32::from_le_bytes(len_bytes) as usize;
+
+            // Read message
+            let mut msg_bytes = vec![0; msg_len];
+            reader.read_exact(&mut msg_bytes)?;
+
+            let cmd = KvsCommand::decode(&msg_bytes[..])?;
+            if !cmd.verify_checksum() {
+                return Err(KvsError::CorruptedData);
+            }
+
+            if let kvs_command::Command::Set(set) = cmd.command {
+                Ok(Some(set.value))
             } else {
                 Err(KvsError::UnexpectedCommandType)
             }
