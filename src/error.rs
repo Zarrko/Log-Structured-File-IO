@@ -15,6 +15,12 @@ pub enum KvsError {
 
     /// Unexpected Command
     UnexpectedCommandType,
+
+    /// Deserialize error
+    Deserialize(prost::DecodeError),
+
+    /// Corrupted data
+    CorruptedData,
 }
 
 impl From<io::Error> for KvsError {
@@ -26,6 +32,12 @@ impl From<io::Error> for KvsError {
 impl From<serde_json::Error> for KvsError {
     fn from(value: serde_json::Error) -> KvsError {
         KvsError::Serde(value)
+    }
+}
+
+impl From<prost::DecodeError> for KvsError {
+    fn from(value: prost::DecodeError) -> KvsError {
+        KvsError::Deserialize(value)
     }
 }
 

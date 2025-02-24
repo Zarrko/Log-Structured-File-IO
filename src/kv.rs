@@ -1,3 +1,4 @@
+use std::cmp::max;
 use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
@@ -10,8 +11,10 @@ use serde_json::Deserializer;
 use crate::{KvsError, Result};
 use crate::kvs_command::{KvsSet, KvsRemove, KvsCommand, kvs_command};
 use std::ffi::OsStr;
+use std::io::ErrorKind::UnexpectedEof;
 use std::time::{SystemTime, UNIX_EPOCH};
 use crc32fast::Hasher;
+use prost::Message;
 use crate::kv::Command::Set;
 
 const COMPACTION_THRESHOLD: u64 = 1024 * 1024;
@@ -69,13 +72,21 @@ impl KvStore {
         let mut readers = HashMap::new();
         let mut index = BTreeMap::new();
 
+        let mut highest_seq = 0;
+
         let gen_list = sorted_gen_list(&path)?;
         let mut uncompacted = 0;
 
         for &gen in &gen_list {
             let mut reader = BufReaderWithPos::new(File::open(log_path(&path, gen))?)?;
-            uncompacted += load(gen, &mut reader, &mut index)?;
+
+            let uncompat = 0;
+            let seq = 0;
+            (uncompat, seq) = load_v2(gen, &mut reader, &mut index)?;
+
+            uncompacted += uncompat;
             readers.insert(gen, reader);
+            highest_seq = max(highest_seq, seq);
         }
 
         let current_gen = gen_list.last().unwrap_or(&0) + 1;
@@ -88,7 +99,7 @@ impl KvStore {
             current_gen,
             index,
             uncompacted,
-            current_sequence: None,
+            current_sequence: Some(highest_seq),
         })
     }
 
@@ -261,35 +272,79 @@ fn sorted_gen_list(path: &Path) -> Result<Vec<u64>> {
 /// Load the whole log file and store value locations in the index map.
 ///
 /// Returns how many bytes can be saved after a compaction.
-fn load(
+fn load_v2(
     gen: u64,
     reader: &mut BufReaderWithPos<File>,
     index: &mut BTreeMap<String, CommandPos>,
-) -> Result<u64> {
-    // To make sure we read from the beginning of the file.
+) -> Result<(u64, u64)> {
     let mut pos = reader.seek(SeekFrom::Start(0))?;
-    let mut stream = Deserializer::from_reader(reader).into_iter::<Command>();
-    let mut uncompacted = 0; // number of bytes that can be saved after a compaction.
-    while let Some(cmd) = stream.next() {
-        let new_pos = stream.byte_offset() as u64;
-        match cmd? {
-            Command::Set { key, .. } => {
-                if let Some(old_cmd) = index.insert(key, (gen, pos..new_pos).into()) {
+    let mut uncompacted = 0;
+    let mut highest_sequence = 0;
+
+    loop {
+        let start_pos = pos;
+
+        // Read the message length (4 bytes) prefix:
+        // 4 bytes (32 bits) allows us to represent message sizes up to ~4GB
+        // ToDo: Use variable length encoding like varint
+        let mut len_bytes = [0u8; 4];
+        match reader.read_exact(&mut len_bytes) {
+            Ok(_) => (),
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                // reached eof
+                break;
+            },
+            Err(e) => return Err(e.into()),
+        }
+
+        let msg_len = u32::from_le_bytes(len_bytes) as usize;
+        pos += 4;
+
+        // Read message bytes
+        let mut msg_bytes = vec![0u8; msg_len];
+        reader.read_exact(&mut msg_bytes)?;
+        pos += msg_len as u64;
+
+        // Deserialize the protobuf message
+        let cmd = match KvsCommand::decode(&msg_bytes[..]) {
+            Ok(cmd) => cmd,
+            Err(e) => return Err(KvsError::Deserialize(e))
+        };
+
+        if !cmd.verify_checksum() {
+            return Err(KvsError::CorruptedData);
+        }
+
+        highest_sequence = max(highest_sequence, cmd.sequence_number);
+        match cmd.command {
+            Some(kvs_command::Command::Set(set)) => {
+                let key = set.key;
+                let new_pos = CommandPos {
+                    gen,
+                    pos: start_pos,
+                    len: pos - start_pos,
+                };
+
+                if let Some(old_cmd) = index.insert(key, new_pos){
                     uncompacted += old_cmd.len;
                 }
             }
-            Command::Remove { key } => {
+
+            Some(kvs_command::Command::Remove(remove)) => {
+                let key = remove.key;
                 if let Some(old_cmd) = index.remove(&key) {
                     uncompacted += old_cmd.len;
                 }
-                // the "remove" command itself can be deleted in the next compaction.
-                // so we add its length to `uncompacted`.
-                uncompacted += new_pos - pos;
+                // The remove command itself can be deleted in compaction
+                uncompacted += (pos - start_pos);
+            }
+            None => {
+                return Err(KvsError::UnexpectedCommandType);
             }
         }
-        pos = new_pos;
     }
-    Ok(uncompacted)
+
+    Ok((uncompacted, highest_sequence))
 }
 
 fn log_path(dir: &Path, gen: u64) -> PathBuf {
@@ -368,6 +423,17 @@ impl KvsCommand {
             version: CURRENT_SCHEMA_VERSION as u32,
             command: command.into(),
         }
+    }
+
+    fn verify_checksum(&self) -> bool {
+        let stored_checksum = self.checksum;
+
+        let calculated_checksum = match &self.command {
+            Some(cmd) => cmd.calculate_checksum(),
+            None => return false,
+        };
+
+        stored_checksum == calculated_checksum
     }
 }
 
