@@ -21,10 +21,10 @@ const CURRENT_SCHEMA_VERSION: u64 = 1;
 /// store.set("key1", "value1")
 /// store.set("key1", "value2")
 /// store.remove("key1")
-/// Would create log entries like this (in JSON format):
-/// {"Set": {"key": "key1", "value": "value1"}}  // position 0-40
-/// {"Set": {"key": "key1", "value": "value2"}}  // position 41-81
-/// {"Remove": {"key": "key1"}}                  // position 82-105
+/// Would create log entries like this
+// [Length: 4 bytes][KvsCommand: Set with metadata, key1, value1]  // position 0-X
+// [Length: 4 bytes][KvsCommand: Set with metadata, key1, value2]  // position X+1-Y
+// [Length: 4 bytes][KvsCommand: Remove with metadata, key1]       // position Y+1-Z
 /// The in-memory index would:
 ///
 /// First point "key1" to position 0
