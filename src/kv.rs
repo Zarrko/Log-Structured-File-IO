@@ -52,6 +52,8 @@ pub struct KvStore {
     // deleted during a compaction.
     uncompacted: u64,
     current_sequence: Option<u64>,
+    reader_buffer_size: usize,
+    writer_buffer_size: usize,
 }
 
 impl KvStore {
@@ -62,7 +64,9 @@ impl KvStore {
     /// # Errors
     ///
     /// It propagates I/O or deserialization errors during the log replay.
-    pub fn open(path: impl Into<PathBuf>) -> Result<KvStore> {
+    pub fn open(path: impl Into<PathBuf>, reader_buffer_size: Option<usize>, writer_buffer_size: Option<usize>) -> Result<KvStore> {
+        let reader_buffer_size = reader_buffer_size.unwrap_or(8 * 1024); // 8kb
+        let writer_buffer_size = writer_buffer_size.unwrap_or(8 * 1024);
         let path = path.into();
         fs::create_dir_all(&path)?;
 
@@ -97,6 +101,8 @@ impl KvStore {
             index,
             uncompacted,
             current_sequence: Some(highest_seq),
+            reader_buffer_size,
+            writer_buffer_size,
         })
     }
 
@@ -242,10 +248,24 @@ impl KvStore {
                 reader.seek(SeekFrom::Start(cmd_pos.pos))?;
             }
 
-            let mut entry_reader = reader.take(cmd_pos.len);
-            let len = io::copy(&mut entry_reader, &mut compaction_writer)?;
-            *cmd_pos = (compaction_gen, new_pos..new_pos + len).into();
-            new_pos += len;
+            // Read length prefix
+            let mut len_bytes = [0u8; 4];
+            reader.read_exact(&mut len_bytes)?;
+            let msg_len = u32::from_le_bytes(len_bytes) as usize;
+
+            // Read the message
+            let mut msg_bytes = vec![0; msg_len];
+            reader.read_exact(&mut msg_bytes)?;
+
+            // Write length prefix to compaction file
+            compaction_writer.write_all(&len_bytes)?;
+
+            // Write message bytes to compaction file
+            compaction_writer.write_all(&msg_bytes)?;
+
+            // Update index to point to new location
+            *cmd_pos = CommandPos { gen: compaction_gen, pos: new_pos, len: 4 + msg_len as u64 };
+            new_pos += 4 + msg_len as u64;
         }
         compaction_writer.flush()?;
 
@@ -269,7 +289,7 @@ impl KvStore {
     ///
     /// Returns the writer to the log.
     fn new_log_file(&mut self, gen: u64) -> Result<BufWriterWithPos<File>> {
-        new_log_file(&self.path, gen, &mut self.readers)
+        new_log_file(&self.path, gen, &mut self.readers, self.writer_buffer_size, self.reader_buffer_size)
     }
 }
 
@@ -280,6 +300,8 @@ fn new_log_file(
     path: &Path,
     gen: u64,
     readers: &mut HashMap<u64, BufReaderWithPos<File>>,
+    reader_buffer_size: usize,
+    writer_buffer_size: usize,
 ) -> Result<BufWriterWithPos<File>> {
     let path = log_path(&path, gen);
     let writer = BufWriterWithPos::new(
@@ -288,8 +310,9 @@ fn new_log_file(
             .write(true)
             .append(true)
             .open(&path)?,
+        writer_buffer_size,
     )?;
-    readers.insert(gen, BufReaderWithPos::new(File::open(&path)?)?);
+    readers.insert(gen, BufReaderWithPos::new(File::open(&path)?, reader_buffer_size)?);
     Ok(writer)
 }
 
@@ -502,10 +525,10 @@ struct BufReaderWithPos<R: Read + Seek> {
 }
 
 impl<R: Read + Seek> BufReaderWithPos<R> {
-    fn new(mut inner: R) -> Result<Self> {
+    fn new(mut inner: R, buffer_size: usize) -> Result<Self> {
         let pos = inner.seek(SeekFrom::Current(0))?;
         Ok(BufReaderWithPos {
-            reader: BufReader::new(inner),
+            reader: BufReader::with_capacity(buffer_size, inner),
             pos,
         })
     }
@@ -532,10 +555,10 @@ struct BufWriterWithPos<W: Write + Seek> {
 }
 
 impl<W: Write + Seek> BufWriterWithPos<W> {
-    fn new(mut inner: W) -> Result<Self> {
+    fn new(mut inner: W, buffer_size: usize) -> Result<Self> {
         let pos = inner.seek(SeekFrom::Current(0))?;
         Ok(BufWriterWithPos {
-            writer: BufWriter::new(inner),
+            writer: BufWriter::with_capacity(buffer_size, inner),
             pos,
         })
     }
