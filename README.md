@@ -2,7 +2,7 @@
 
 ## Key Design Choices
 
-### 1. Serialization Format: We switched from JSON to Protocol Buffers
+### 1. Serialization Format: Switched from JSON to Protocol Buffers
 
 - More compact binary format versus human-readable JSON
 - Better performance for serialization/deserialization
