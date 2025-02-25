@@ -79,7 +79,7 @@ impl KvStore {
         let mut uncompacted = 0;
 
         for &gen in &gen_list {
-            let mut reader = BufReaderWithPos::new(File::open(log_path(&path, gen))?)?;
+            let mut reader = BufReaderWithPos::new(File::open(log_path(&path, gen))?, reader_buffer_size)?;
 
             let uncompat = 0;
             let seq = 0;
@@ -91,7 +91,7 @@ impl KvStore {
         }
 
         let current_gen = gen_list.last().unwrap_or(&0) + 1;
-        let writer = new_log_file(&path, current_gen, &mut readers)?;
+        let writer = new_log_file(&path, current_gen, &mut readers, reader_buffer_size, writer_buffer_size)?;
 
         Ok(KvStore {
             path,
