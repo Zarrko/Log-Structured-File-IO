@@ -183,15 +183,38 @@ impl KvStore {
     /// It returns `KvsError::KeyNotFound` if the given key is not found.
     ///
     /// It propagates I/O or serialization errors during writing the log.
-    pub fn remove(&mut self, key: String) -> Result<()> {
+    pub fn remove_v2(&mut self, key: String) -> Result<()> {
         if self.index.contains_key(&key) {
-            let cmd = Command::remove(key);
-            serde_json::to_writer(&mut self.writer, &cmd)?;
+
+            let sequence = self.current_sequence.unwrap_or(0) + 1;
+            self.current_sequence = Some(sequence);
+
+            let cmd = KvsCommand::remove(key, sequence);
+            let pos = self.writer.pos;
+
+            let cmd_bytes = cmd.encode_to_vec();
+
+            // Write length prefix (4 bytes, little endian)
+            self.writer.write_all(&(cmd_bytes.len() as u32).to_le_bytes())?;
+
+            // Write actual message
+            self.writer.write_all(&cmd_bytes)?;
             self.writer.flush()?;
-            if let Command::Remove { key } = cmd {
-                let old_cmd = self.index.remove(&key).expect("key not found");
+
+            if let kvs_command::Command::Remove(remove) = cmd.command {
+                let old_cmd = self.index.remove(&remove.key).expect("key not found");
                 self.uncompacted += old_cmd.len;
+
+                // The remove command itself will be deleted in compaction
+                // once a key is removed, both the original set command and the remove command become "stale"
+                // and can be eliminated during compaction.
+                self.uncompacted += self.writer.pos - pos;
             }
+
+            if self.uncompacted > COMPACTION_THRESHOLD {
+                self.compact()?;
+            }
+
             Ok(())
         } else {
             Err(KvsError::KeyNotFound)
@@ -430,13 +453,13 @@ impl KvsCommand {
         }
     }
 
-    fn remove(key: String) -> KvsCommand
+    fn remove(key: String, sequence: u64) -> KvsCommand
     {
         let command = kvs_command::Command::Remove(KvsRemove { key, key_size: 0 });
         let checksum = command.calculate_checksum();
         KvsCommand {
             timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs(),
-            sequence_number: 0,
+            sequence_number: sequence,
             checksum,
             version: CURRENT_SCHEMA_VERSION as u32,
             command: command.into(),
