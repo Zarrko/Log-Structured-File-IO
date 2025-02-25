@@ -81,8 +81,8 @@ impl KvStore {
         for &gen in &gen_list {
             let mut reader = BufReaderWithPos::new(File::open(log_path(&path, gen))?, reader_buffer_size)?;
 
-            let uncompat = 0;
-            let seq = 0;
+            let mut uncompat = 0;
+            let mut seq = 0;
             (uncompat, seq) = load_v2(gen, &mut reader, &mut index)?;
 
             uncompacted += uncompat;
@@ -172,10 +172,14 @@ impl KvStore {
                 return Err(KvsError::CorruptedData);
             }
 
-            if let kvs_command::Command::Set(set) = cmd.command {
-                Ok(Some(set.value))
+            if let Some(command) = cmd.command {
+                if let kvs_command::Command::Set(set) = command {
+                    Ok(Some(set.value))
+                } else {
+                    Err(KvsError::UnexpectedCommandType)
+                }
             } else {
-                Err(KvsError::UnexpectedCommandType)
+                Ok(None)
             }
         } else {
             Ok(None)
@@ -207,14 +211,15 @@ impl KvStore {
             self.writer.write_all(&cmd_bytes)?;
             self.writer.flush()?;
 
-            if let kvs_command::Command::Remove(remove) = cmd.command {
-                let old_cmd = self.index.remove(&remove.key).expect("key not found");
-                self.uncompacted += old_cmd.len;
-
-                // The remove command itself will be deleted in compaction
-                // once a key is removed, both the original set command and the remove command become "stale"
-                // and can be eliminated during compaction.
-                self.uncompacted += self.writer.pos - pos;
+            if let Some(command) = cmd.command {
+                if let kvs_command::Command::Remove(remove) = command {
+                    if let Some(old_cmd) = self.index.remove(&remove.key) {
+                        // The remove command itself will be deleted in compaction
+                        // once a key is removed, both the original set command and the remove command become "stale"
+                        // and can be eliminated during compaction.
+                        self.uncompacted += old_cmd.len;
+                    }
+                }
             }
 
             if self.uncompacted > COMPACTION_THRESHOLD {
@@ -400,7 +405,7 @@ fn load_v2(
                     uncompacted += old_cmd.len;
                 }
                 // The remove command itself can be deleted in compaction
-                uncompacted += (pos - start_pos);
+                uncompacted += pos - start_pos;
             }
             None => {
                 return Err(KvsError::UnexpectedCommandType);
