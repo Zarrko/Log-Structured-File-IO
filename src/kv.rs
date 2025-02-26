@@ -81,9 +81,7 @@ impl KvStore {
         for &gen in &gen_list {
             let mut reader = BufReaderWithPos::new(File::open(log_path(&path, gen))?, reader_buffer_size)?;
 
-            let mut uncompat = 0;
-            let mut seq = 0;
-            (uncompat, seq) = load_v2(gen, &mut reader, &mut index)?;
+            let (uncompat, seq) = load_v2(gen, &mut reader, &mut index)?;
 
             uncompacted += uncompat;
             readers.insert(gen, reader);
@@ -200,7 +198,6 @@ impl KvStore {
             self.current_sequence = Some(sequence);
 
             let cmd = KvsCommand::remove(key, sequence);
-            let pos = self.writer.pos;
 
             let cmd_bytes = cmd.encode_to_vec();
 
@@ -427,16 +424,6 @@ enum Command {
     Remove { key: String },
 }
 
-impl Command {
-    fn set(key: String, value: String) -> Command {
-        Command::Set { key, value }
-    }
-
-    fn remove(key: String) -> Command {
-        Command::Remove { key }
-    }
-}
-
 trait Checksumable{
     fn calculate_checksum(&self) -> u32;
     fn get_fields_for_checksum(&self) -> Vec<u8>;
@@ -451,14 +438,14 @@ impl Checksumable for kvs_command::Command{
 
     fn get_fields_for_checksum(&self) -> Vec<u8> {
         match self {
-            command @ kvs_command::Command::Set(set) => {
+            _command @ kvs_command::Command::Set(set) => {
                 let mut fields = Vec::new();
                 fields.extend_from_slice(set.key.as_bytes());
                 fields.extend_from_slice(set.value.as_bytes());
                 fields
             }
 
-            command @ kvs_command::Command::Remove(remove) => {
+            _command @ kvs_command::Command::Remove(remove) => {
                 let mut fields = Vec::new();
                 fields.extend_from_slice(remove.key.as_bytes());
                 fields
