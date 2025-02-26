@@ -1,5 +1,5 @@
 use assert_cmd::prelude::*;
-use kvs_project::{KvStore, Result};
+use kvs_project::{KvStore, KvsError, Result};
 use predicates::ord::eq;
 use predicates::str::{contains, is_empty, PredicateStrExt};
 use std::process::Command;
@@ -322,6 +322,109 @@ fn test_log_behavior() -> Result<()> {
             let entry = entry?;
             println!("  {:?}", entry.path());
         }
+    }
+
+    Ok(())
+}
+
+/// JSON Serialization would have 5x average latency compared to Protobufs
+#[test]
+fn test_read_write_latency() -> Result<()> {
+    // Arrange
+    let temp_dir = TempDir::new().expect("unable to create temporary directory");
+    let mut store = KvStore::open(temp_dir.path(), None, None)?;
+    let start = std::time::Instant::now();
+
+    // Act
+    for i in 0..1000{
+        store.set_v2(format!("key{}", i), format!("value{}", i))?;
+    }
+    let duration = start.elapsed();
+    println!("Average write latency in: {}us", duration.as_micros() / 1000);
+
+    let start = std::time::Instant::now();
+    for i in 0..1000{
+        store.get_v2(format!("key{}", i))?;
+    }
+
+    let duration = start.elapsed();
+    println!("Average read latency in: {}us", duration.as_micros() / 1000);
+
+    Ok(())
+}
+
+#[test]
+fn test_large_values() -> Result<()> {
+    let temp_dir = TempDir::new().expect("unable to create temporary directory");
+    let mut store = KvStore::open(temp_dir.path(), None, None)?;
+
+    // Create a large value (10MB)
+    let large_value = "x".repeat(10 * 1024 * 1024);
+
+    // Test with a few large values
+    for i in 0..5 {
+        store.set_v2(format!("large{}", i), large_value.clone())?;
+    }
+
+    // Verify we can read them back
+    for i in 0..5 {
+        assert_eq!(store.get_v2(format!("large{}", i))?.unwrap().len(), large_value.len());
+    }
+
+    Ok(())
+}
+
+// Test concurrent access pattern
+#[test]
+fn test_high_throughput_writes() -> Result<()> {
+    let temp_dir = TempDir::new().expect("unable to create temporary directory");
+    let mut store = KvStore::open(temp_dir.path(), None, None)?;
+
+    let start = std::time::Instant::now();
+
+    // Generate many writes as fast as possible
+    for i in 0..10_000 {
+        store.set_v2(format!("key{}", i), format!("value{}", i))?;
+    }
+
+    let duration = start.elapsed();
+    let ops_per_sec = 10_000.0 / duration.as_secs_f64();
+
+    println!("Write throughput: {:.2} ops/sec", ops_per_sec);
+
+    Ok(())
+}
+
+// Test checksum verification
+#[test]
+fn test_checksum_verification() -> Result<()> {
+    let temp_dir = TempDir::new().expect("unable to create temporary directory");
+    let mut store = KvStore::open(temp_dir.path(), None, None)?;
+
+    // Write some data
+    store.set_v2("key1".to_owned(), "value1".to_owned())?;
+
+    // Close the store
+    drop(store);
+
+    // Corrupt the log file
+    let log_path = temp_dir.path().join("1.log");
+    let mut content = std::fs::read(&log_path)?;
+
+    // Modify some bytes in the middle (shouldn't corrupt the length prefix)
+    if content.len() > 20 {
+        content[15] = content[15].wrapping_add(1);
+        std::fs::write(&log_path, content)?;
+    }
+
+    // Try to open and read - should detect corruption
+    let mut store = KvStore::open(temp_dir.path(), None, None)?;
+    match store.get_v2("key1".to_owned()) {
+        Err(e) => {
+            assert!(matches!(e, KvsError::CorruptedData));
+            println!("Error: {:?}", e)
+        },
+        Ok(_) => panic!("Should have detected corruption"),
     }
 
     Ok(())
